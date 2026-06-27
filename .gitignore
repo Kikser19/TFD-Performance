@@ -1,0 +1,19 @@
+# .NET build output
+**/bin/
+**/obj/
+**/out/
+
+# IDE
+.vs/
+.vscode/
+.idea/
+*.user
+
+# Local env / secrets
+*.env
+.env
+.env.local
+
+# OS
+Thumbs.db
+.DS_Store

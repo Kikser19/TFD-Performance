@@ -1,0 +1,237 @@
+### TFD Performance — API request collection
+### Works in: VS Code (REST Client ext: humao.rest-client) or JetBrains HTTP Client (Rider/IntelliJ).
+### Everything goes through the gateway on :8080 — individual services are not exposed.
+###
+### HOW TO USE
+###   1. docker compose up -d   (stack must be running)
+###   2. Click "Send Request" above each request, top to bottom.
+###   3. The trainer/client tokens and the created IDs are captured automatically and
+###      reused by later requests — you don't paste anything by hand.
+###
+### Re-running: signup is unique per run via {{$timestamp}} in the emails, so it won't 409.
+### (If your client only supports JetBrains syntax and {{$timestamp}} errors, replace it
+###  with a number you bump each run.)
+
+@base = http://localhost:8080
+@password = supersecret1
+
+############################################################
+## Health
+############################################################
+
+GET {{base}}/health
+
+############################################################
+## Auth (Identity Service)
+############################################################
+
+# @name signupTrainer
+POST {{base}}/api/auth/signup
+Content-Type: application/json
+
+{
+  "name": "Coach Example",
+  "email": "coach-{{$timestamp}}@example.com",
+  "password": "{{password}}",
+  "role": "trainer"
+}
+
+###
+@trainerToken = {{signupTrainer.response.body.token}}
+@trainerEmail = {{signupTrainer.response.body.user.email}}
+
+# @name signupClient
+POST {{base}}/api/auth/signup
+Content-Type: application/json
+
+{
+  "name": "Client Example",
+  "email": "client-{{$timestamp}}@example.com",
+  "password": "{{password}}",
+  "role": "client"
+}
+
+###
+@clientToken = {{signupClient.response.body.token}}
+@clientId = {{signupClient.response.body.user.id}}
+
+# Log in again later with the captured trainer email (token refresh).
+# @name login
+POST {{base}}/api/auth/login
+Content-Type: application/json
+
+{
+  "email": "{{trainerEmail}}",
+  "password": "{{password}}"
+}
+
+### Who am I (gateway validates the JWT, forwards identity to Identity Service)
+GET {{base}}/api/auth/me
+Authorization: Bearer {{trainerToken}}
+
+############################################################
+## Program Service — trainer builds content
+############################################################
+
+# @name createExercise
+POST {{base}}/api/exercises
+Authorization: Bearer {{trainerToken}}
+Content-Type: application/json
+
+{
+  "name": "Back Squat",
+  "youtubeVideoId": "dQw4w9WgXcQ",
+  "instructions": "Brace, sit back, depth below parallel."
+}
+
+###
+@exerciseId = {{createExercise.response.body.id}}
+
+### List my exercises (paginated)
+GET {{base}}/api/exercises?page=1&pageSize=20
+Authorization: Bearer {{trainerToken}}
+
+# @name createProgram
+POST {{base}}/api/programs
+Authorization: Bearer {{trainerToken}}
+Content-Type: application/json
+
+{
+  "title": "Strength Foundations",
+  "type": "one_on_one",
+  "priceCents": null
+}
+
+###
+@programId = {{createProgram.response.body.id}}
+
+### List my programs
+GET {{base}}/api/programs?page=1&pageSize=20
+Authorization: Bearer {{trainerToken}}
+
+# @name createWorkout
+POST {{base}}/api/programs/{{programId}}/workouts
+Authorization: Bearer {{trainerToken}}
+Content-Type: application/json
+
+{
+  "title": "Day 1 - Lower",
+  "orderIndex": 0
+}
+
+###
+@workoutId = {{createWorkout.response.body.id}}
+
+# @name addWorkoutExercise
+POST {{base}}/api/workouts/{{workoutId}}/exercises
+Authorization: Bearer {{trainerToken}}
+Content-Type: application/json
+
+{
+  "exerciseId": "{{exerciseId}}",
+  "prescribedSets": 5,
+  "prescribedReps": 5,
+  "prescribedRestSeconds": 120,
+  "orderIndex": 0
+}
+
+###
+@workoutExerciseId = {{addWorkoutExercise.response.body.id}}
+
+### Assign the program to the client (manual 1:1)
+POST {{base}}/api/programs/{{programId}}/assignments
+Authorization: Bearer {{trainerToken}}
+Content-Type: application/json
+
+{
+  "clientId": "{{clientId}}"
+}
+
+### See who's assigned to the program
+GET {{base}}/api/programs/{{programId}}/assignments
+Authorization: Bearer {{trainerToken}}
+
+############################################################
+## Program Service — client views assigned content
+############################################################
+
+### Client: my assigned programs
+GET {{base}}/api/me/programs
+Authorization: Bearer {{clientToken}}
+
+### Client: workouts in the program
+GET {{base}}/api/programs/{{programId}}/workouts
+Authorization: Bearer {{clientToken}}
+
+### Client: prescribed exercises in the workout (name + youtube id for the player)
+GET {{base}}/api/workouts/{{workoutId}}/exercises
+Authorization: Bearer {{clientToken}}
+
+############################################################
+## Tracking Service — client logs, then reads back
+############################################################
+
+### Client: log a workout session (Tracking verifies access via Program Service)
+POST {{base}}/api/workout-logs
+Authorization: Bearer {{clientToken}}
+Content-Type: application/json
+
+{
+  "workoutId": "{{workoutId}}",
+  "sets": [
+    { "workoutExerciseId": "{{workoutExerciseId}}", "setNumber": 1, "repsCompleted": 5, "weightUsed": 100.0 },
+    { "workoutExerciseId": "{{workoutExerciseId}}", "setNumber": 2, "repsCompleted": 5, "weightUsed": 102.5 }
+  ]
+}
+
+### Client: read own workout history
+GET {{base}}/api/workout-logs
+Authorization: Bearer {{clientToken}}
+
+### Client: log a nutrition entry
+POST {{base}}/api/nutrition-entries
+Authorization: Bearer {{clientToken}}
+Content-Type: application/json
+
+{
+  "foodName": "Chicken & rice",
+  "calories": 650,
+  "proteinG": 55.0,
+  "carbsG": 70.0,
+  "fatG": 12.5
+}
+
+### Client: read own nutrition history
+GET {{base}}/api/nutrition-entries
+Authorization: Bearer {{clientToken}}
+
+############################################################
+## Tracking Service — trainer dashboard (coaching check)
+############################################################
+
+### Trainer: read this client's workout logs (Tracking asks Program "do you coach them?")
+GET {{base}}/api/clients/{{clientId}}/workout-logs
+Authorization: Bearer {{trainerToken}}
+
+### Trainer: read this client's nutrition logs
+GET {{base}}/api/clients/{{clientId}}/nutrition-entries
+Authorization: Bearer {{trainerToken}}
+
+############################################################
+## Negative checks (should fail on purpose)
+############################################################
+
+### No token -> 401 (rejected at the gateway)
+GET {{base}}/api/programs
+
+### Client tries a trainer-only action -> 403
+POST {{base}}/api/exercises
+Authorization: Bearer {{clientToken}}
+Content-Type: application/json
+
+{ "name": "Nope", "youtubeVideoId": "x" }
+
+### Spoofed identity header without a real token -> 401 (gateway strips it)
+GET {{base}}/api/auth/me
+X-User-Id: 00000000-0000-0000-0000-000000000001
+X-User-Role: trainer
